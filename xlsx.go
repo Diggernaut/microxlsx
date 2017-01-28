@@ -53,12 +53,12 @@ type DocumentInfo struct {
 
 // XLSX Spreadsheet
 type Sheet struct {
-	Title           string
-	columns         []Column
-	rows            []Row
-	sharedStringMap map[string]int
-	sharedStrings   []string
-	DocumentInfo    DocumentInfo
+	Title              string
+	columns            []Column
+	rows               []Row
+	SharedStringMap    map[string]int
+	SharedStringsSlice []string
+	DocumentInfo       DocumentInfo
 }
 
 // Create a sheet with no dimensions
@@ -69,11 +69,11 @@ func NewSheet() Sheet {
 	sst := make([]string, 0)
 
 	s := Sheet{
-		Title:           "Data",
-		columns:         c,
-		rows:            r,
-		sharedStringMap: ssm,
-		sharedStrings:   sst,
+		Title:              "Data",
+		columns:            c,
+		rows:               r,
+		SharedStringMap:    ssm,
+		SharedStringsSlice: sst,
 	}
 
 	return s
@@ -86,11 +86,11 @@ func NewSheetWithColumns(c []Column) Sheet {
 	sst := make([]string, 0)
 
 	s := Sheet{
-		Title:           "Data",
-		columns:         c,
-		rows:            r,
-		sharedStringMap: ssm,
-		sharedStrings:   sst,
+		Title:              "Data",
+		columns:            c,
+		rows:               r,
+		SharedStringMap:    ssm,
+		SharedStringsSlice: sst,
 	}
 
 	s.DocumentInfo.CreatedBy = "xlsx.go"
@@ -126,11 +126,11 @@ func (s *Sheet) AppendRow(r Row) error {
 		if cells[n].Type == CellTypeString {
 			// calculate string reference
 			cells[n].Value = html.EscapeString(cells[n].Value)
-			i, exists := s.sharedStringMap[cells[n].Value]
+			i, exists := s.SharedStringMap[cells[n].Value]
 			if !exists {
-				i = len(s.sharedStrings)
-				s.sharedStringMap[cells[n].Value] = i
-				s.sharedStrings = append(s.sharedStrings, cells[n].Value)
+				i = len(s.SharedStringsSlice)
+				s.SharedStringMap[cells[n].Value] = i
+				s.SharedStringsSlice = append(s.SharedStringsSlice, cells[n].Value)
 			}
 			cells[n].Value = strconv.Itoa(i)
 		}
@@ -146,7 +146,7 @@ func (s *Sheet) AppendRow(r Row) error {
 
 // Get the Shared Strings in the order they were added to the map
 func (s *Sheet) SharedStrings() []string {
-	return s.sharedStrings
+	return s.SharedStringsSlice
 }
 
 // Given zero-based array indices output the Excel cell reference. For
@@ -214,9 +214,22 @@ func (s *Sheet) SaveToWriter(w io.Writer) error {
 		return err
 	}
 
-	ww.SharedStrings = s.sharedStrings
+	ww.SharedStrings = s.SharedStringsSlice
 
 	err = ww.Close()
+
+	return err
+}
+func (ww *WorkbookWriter) WriteFooter() error {
+	z := ww.zipWriter
+	f, err := z.Create("xl/sharedStrings.xml")
+	if err != nil {
+		return err
+	}
+	err = TemplateStringLookups.Execute(f, ww.SharedStrings)
+	if err != nil {
+		return err
+	}
 
 	return err
 }
@@ -292,15 +305,15 @@ func (ww *WorkbookWriter) WriteHeader() error {
 		return err
 	}
 
-	f, err = z.Create("xl/sharedStrings.xml")
-	if err != nil {
-		return err
-	}
-	err = TemplateStringLookups.Execute(f, ww.SharedStrings)
-	if err != nil {
-		return err
-	}
-
+	//f, err = z.Create("xl/sharedStrings.xml")
+	//if err != nil {
+	//	return err
+	//}
+	//	err = TemplateStringLookups.Execute(f, ww.SharedStrings)
+	//	if err != nil {
+	//	return err
+	//	}
+	//
 	return err
 }
 
@@ -341,7 +354,7 @@ func (ww *WorkbookWriter) Close() error {
 			return err
 		}
 	}
-
+	ww.WriteFooter()
 	return ww.zipWriter.Close()
 }
 
@@ -391,10 +404,11 @@ type SheetWriter struct {
 
 // Write the given rows to this SheetWriter
 func (sw *SheetWriter) WriteRows(rows []Row) error {
-	if sw.closed {
-		panic("Can not write to closed SheetWriter")
+	if sw != nil {
+		if sw.closed {
+			panic("Can not write to closed SheetWriter")
+		}
 	}
-
 	var err error
 
 	for i, r := range rows {
@@ -480,6 +494,7 @@ func (sw *SheetWriter) Close() error {
 	if sw.closed {
 		panic("SheetWriter already closed")
 	}
+
 	sw.closed = true
 
 	cellEndX, cellEndY := CellIndex(sw.maxNCols-1, sw.currentIndex-1)
@@ -509,7 +524,6 @@ func (sw *SheetWriter) Close() error {
 	if err != nil {
 		return err
 	}
-
 	return nil
 }
 
