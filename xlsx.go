@@ -502,7 +502,11 @@ func (sw *SheetWriter) Close() error {
 	if err != nil {
 		return err
 	}
-
+	_, err = fmt.Fprintf(sw.f, `<autoFilter ref="A1:%s%d"></autoFilter>`, cellEndX, cellEndY)
+	if err != nil {
+		return err
+	}
+	//<autoFilter ref="A1:R7977"></autoFilter>
 	if sw.mergeCellsCount > 0 {
 		_, err = fmt.Fprintf(sw.f, `<mergeCells count="%v">`, sw.mergeCellsCount)
 		if err != nil {
@@ -540,4 +544,5 @@ func (sw *SheetWriter) WriteHeader(s *Sheet) error {
 	}
 
 	return TemplateSheetStart.Execute(sw.f, sheet)
+
 }
