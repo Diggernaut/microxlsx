@@ -9,9 +9,14 @@ import (
 	"html"
 	"io"
 	"os"
+	"regexp"
 	"strconv"
 	"time"
+
+	"github.com/Diggernaut/cast"
 )
+
+var linkcheck *regexp.Regexp
 
 type CellType uint
 
@@ -58,6 +63,7 @@ type Sheet struct {
 	rows               []Row
 	SharedStringMap    map[string]int
 	SharedStringsSlice []string
+	HyperLinks         map[int]string
 	DocumentInfo       DocumentInfo
 }
 
@@ -67,13 +73,14 @@ func NewSheet() Sheet {
 	r := make([]Row, 0)
 	ssm := make(map[string]int)
 	sst := make([]string, 0)
-
+	hy := make(map[int]string)
 	s := Sheet{
 		Title:              "Data",
 		columns:            c,
 		rows:               r,
 		SharedStringMap:    ssm,
 		SharedStringsSlice: sst,
+		HyperLinks:         hy,
 	}
 
 	return s
@@ -84,13 +91,14 @@ func NewSheetWithColumns(c []Column) Sheet {
 	r := make([]Row, 0)
 	ssm := make(map[string]int)
 	sst := make([]string, 0)
-
+	hy := make(map[int]string)
 	s := Sheet{
 		Title:              "Data",
 		columns:            c,
 		rows:               r,
 		SharedStringMap:    ssm,
 		SharedStringsSlice: sst,
+		HyperLinks:         hy,
 	}
 
 	s.DocumentInfo.CreatedBy = "xlsx.go"
@@ -226,7 +234,12 @@ func (ww *WorkbookWriter) WriteFooter() error {
 	if err != nil {
 		return err
 	}
-	err = TemplateStringLookups.Execute(f, ww.SharedStrings)
+	type d struct {
+		Count int
+		Data  []string
+	}
+	dd := d{ww.datalen - len(ww.SharedStrings), ww.SharedStrings}
+	err = TemplateStringLookups.Execute(f, dd)
 	if err != nil {
 		return err
 	}
@@ -282,7 +295,12 @@ func (ww *WorkbookWriter) WriteHeader() error {
 	if err != nil {
 		return err
 	}
-	err = TemplateWorkbook.Execute(f, ww.sheetNames)
+	type wwd struct {
+		SheetNames []string
+		DefNames   map[string]string
+	}
+	dd := wwd{ww.sheetNames, ww.sheetsLastCells}
+	err = TemplateWorkbook.Execute(f, dd)
 	if err != nil {
 		return err
 	}
@@ -319,18 +337,21 @@ func (ww *WorkbookWriter) WriteHeader() error {
 
 // Handles the writing of an XLSX workbook
 type WorkbookWriter struct {
-	zipWriter     *zip.Writer
-	sheetWriter   *SheetWriter
-	headerWritten bool
-	closed        bool
-	sheetNames    []string
-	SharedStrings []string
-	documentInfo  *DocumentInfo
+	zipWriter       *zip.Writer
+	sheetWriter     *SheetWriter
+	headerWritten   bool
+	closed          bool
+	sheetNames      []string
+	sheetsLastCells map[string]string
+	SharedStrings   []string
+	documentInfo    *DocumentInfo
+	datalen         int
 }
 
 // Creates a new WorkbookWriter
 func NewWorkbookWriter(w io.Writer) *WorkbookWriter {
-	return &WorkbookWriter{zip.NewWriter(w), nil, false, false, []string{}, nil, nil}
+	linkcheck = regexp.MustCompile("^\\s*[Hh]{1}[Tt]{2}[pP]{1}[Ss]{0,1}\\:\\/\\/")
+	return &WorkbookWriter{zip.NewWriter(w), nil, false, false, []string{}, make(map[string]string), nil, nil, 0}
 }
 
 // Closes the WorkbookWriter
@@ -379,7 +400,7 @@ func (ww *WorkbookWriter) NewSheetWriter(s *Sheet) (*SheetWriter, error) {
 	if err != nil {
 		return nil, err
 	}
-	sw := &SheetWriter{f, err, 0, 0, false, []string{}, 0}
+	sw := &SheetWriter{f, err, 0, 0, false, []string{}, 0, make(map[string]string), ww}
 
 	ww.documentInfo = &s.DocumentInfo
 
@@ -400,6 +421,8 @@ type SheetWriter struct {
 	closed          bool
 	mergeCells      []string
 	mergeCellsCount int
+	hyperLinks      map[string]string
+	ww              *WorkbookWriter
 }
 
 // Write the given rows to this SheetWriter
@@ -470,11 +493,106 @@ func (sw *SheetWriter) WriteRows(rows []Row) error {
 				}
 				sw.mergeCellsCount += 1
 			}
-
 			_, err = fmt.Fprintf(sw.f, cellString, cellX, cellY, c.Value)
 			if err != nil {
 				return err
 			}
+		}
+
+		_, err = fmt.Fprint(sw.f, `</row>`)
+		if err != nil {
+			return err
+		}
+
+	}
+
+	sw.currentIndex += uint64(len(rows))
+
+	return nil
+}
+
+// Write the given rows to this SheetWriter
+func (sw *SheetWriter) WriteRowsLink(rows []Row, shmap map[int]string) error {
+	if sw != nil {
+		if sw.closed {
+			panic("Can not write to closed SheetWriter")
+		}
+	}
+	var err error
+
+	for i, r := range rows {
+		_, err = fmt.Fprintf(sw.f, `<row r="%d">`, uint64(i)+sw.currentIndex+1)
+		if err != nil {
+			return err
+		}
+
+		if sw.maxNCols < uint64(len(r.Cells)) {
+			sw.maxNCols = uint64(len(r.Cells))
+		}
+
+		for j, c := range r.Cells {
+
+			cellX, cellY := CellIndex(uint64(j), uint64(i)+sw.currentIndex)
+
+			switch c.Type {
+			case CellTypeDate, CellTypeDatetime:
+				d, err := time.Parse(time.RFC3339, c.Value)
+				if err == nil {
+					c.Value = OADate(d)
+				} else {
+					return err
+				}
+			case CellTypeInlineString:
+				c.Value = html.EscapeString(c.Value)
+			}
+
+			var cellString string
+
+			switch c.Type {
+			case CellTypeString:
+				cellString = `<c r="%s%d" t="s" s="1"><v>%s</v></c>`
+			case CellTypeInlineString:
+				cellString = `<c r="%s%d" t="inlineStr"><is><t>%s</t></is></c>`
+			case CellTypeNumber:
+				cellString = `<c r="%s%d" t="n"><v>%s</v></c>`
+			case CellTypeDatetime:
+				cellString = `<c r^\\s*[Hh]{1}[Tt]{2}[pP]{1}[Ss]{0,1}\\:\\/\\/="%s%d" s="2"><v>%s</v></c>`
+			case CellTypeDate:
+				cellString = `<c r="%s%d" s="3"><v>%s</v></c>`
+			}
+
+			if c.Colspan < 0 || c.Rowspan < 0 {
+				panic(fmt.Sprintf("%v is not a valid colspan", c.Colspan))
+			} else if c.Colspan > 1 || c.Rowspan > 1 {
+
+				if c.Colspan < 1 {
+					c.Colspan = 1
+				}
+				if c.Rowspan < 1 {
+					c.Rowspan = 1
+				}
+
+				mergeCellX, mergeCellY := CellIndex(uint64(j)+c.Colspan-1, uint64(i)+sw.currentIndex+c.Rowspan-1)
+				sw.mergeCells = append(sw.mergeCells, fmt.Sprintf(`<mergeCell ref="%[1]s%[2]d:%[3]s%[4]d"/>`, cellX, cellY, mergeCellX, mergeCellY))
+				if err != nil {
+					return err
+				}
+				sw.mergeCellsCount += 1
+			}
+			switch c.Type {
+			case CellTypeString:
+				if val, ok := shmap[cast.ToInt(c.Value)]; ok {
+					if linkcheck.MatchString(val) {
+						sw.hyperLinks[fmt.Sprintf("%s%d", cellX, cellY)] = val
+					}
+				}
+
+			}
+			_, err = fmt.Fprintf(sw.f, cellString, cellX, cellY, c.Value)
+			if err != nil {
+				return err
+			}
+			sw.ww.datalen++
 		}
 
 		_, err = fmt.Fprint(sw.f, `</row>`)
@@ -496,15 +614,36 @@ func (sw *SheetWriter) Close() error {
 	}
 
 	sw.closed = true
-
+	sl := make(map[int]string)
 	cellEndX, cellEndY := CellIndex(sw.maxNCols-1, sw.currentIndex-1)
 	_, err := fmt.Fprintf(sw.f, `<dimension ref="A1:%s%d"/></sheetData>`, cellEndX, cellEndY)
 	if err != nil {
 		return err
 	}
+	//
 	_, err = fmt.Fprintf(sw.f, `<autoFilter ref="A1:%s%d"></autoFilter>`, cellEndX, cellEndY)
 	if err != nil {
 		return err
+	}
+	sw.ww.sheetsLastCells[sw.ww.sheetNames[len(sw.ww.sheetNames)-1]] = fmt.Sprintf("$%s$%d", cellEndX, cellEndY)
+	if len(sw.hyperLinks) > 0 {
+		_, err = fmt.Fprintf(sw.f, `<hyperlinks>`)
+		if err != nil {
+			return err
+		}
+		var count int
+		for k, v := range sw.hyperLinks {
+			count++
+			_, err = fmt.Fprintf(sw.f, `<hyperlink ref="%s" r:id="rId%d"/>`, k, count)
+			if err != nil {
+				return err
+			}
+			sl[count] = v
+		}
+		_, err = fmt.Fprintf(sw.f, `</hyperlinks>`)
+		if err != nil {
+			return err
+		}
 	}
 	//<autoFilter ref="A1:R7977"></autoFilter>
 	if sw.mergeCellsCount > 0 {
@@ -527,6 +666,16 @@ func (sw *SheetWriter) Close() error {
 	_, err = fmt.Fprintf(sw.f, `</worksheet>`)
 	if err != nil {
 		return err
+	}
+	if len(sw.hyperLinks) > 0 {
+		f, err := sw.ww.zipWriter.Create("xl/worksheets/_rels/" + fmt.Sprintf("sheet%s", strconv.Itoa(len(sw.ww.sheetNames))) + ".xml.rels")
+		if err != nil {
+			return err
+		}
+		err = TemplateHyperLinks.Execute(f, sl)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }

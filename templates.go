@@ -18,6 +18,7 @@ var (
 	TemplateSheetStart            *template.Template
 	TemplateApp                   *template.Template
 	TemplateCore                  *template.Template
+	TemplateHyperLinks            *template.Template
 )
 
 // Template function for integer addition. This is useful to convert between
@@ -44,6 +45,7 @@ func init() {
 	TemplateSheetStart = template.Must(template.New("templateSheetStart").Funcs(funcMap).Parse(re.ReplaceAllLiteralString(templateSheetStart, "")))
 	TemplateApp = template.Must(template.New("templateApp").Funcs(funcMap).Parse(re.ReplaceAllLiteralString(templateApp, "")))
 	TemplateCore = template.Must(template.New("templateCore").Funcs(funcMap).Parse(re.ReplaceAllLiteralString(templateCore, "")))
+	TemplateHyperLinks = template.Must(template.New("templateHyperLinks").Funcs(funcMap).Parse(re.ReplaceAllLiteralString(templateHyperLinks, "")))
 }
 
 const templateContentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -76,10 +78,20 @@ const templateWorkbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?
           <workbookView xWindow="480" yWindow="60" windowWidth="18195" windowHeight="8505"/>
       </bookViews>
       <sheets>
-          {{ range $i, $e := . }}
+          {{ range $i, $e := .SheetNames }}
           <sheet name="{{$e}}" sheetId="{{plus $i 1 }}" r:id="rId{{plus $i 1}}"/>
           {{ end }}
       </sheets>
+      <definedNames>  
+      {{ range $i, $e := .SheetNames }}
+        {{ range $k, $v := $.DefNames }}
+          {{ if eq $k $e }}
+        <definedName function="false" hidden="true" localSheetId="{{$i}}" name="_xlnm._FilterDatabase" vbProcedure="false">{{$e}}!$A$1:{{$v}}</definedName> 
+          {{ end }}
+        {{ end}}
+        {{ end }}
+      
+      </definedNames>   
       <calcPr calcId="145621"/>
   </workbook>`
 
@@ -138,8 +150,14 @@ const templateStyles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   </styleSheet>`
 
 const templateStringLookups = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{{len .}}" uniqueCount="{{len .}}">
-{{range .}}<si><t>{{.}}</t></si>{{end}}
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{{ .Count }}" uniqueCount="{{len .Data }}">
+{{range .Data}}
+{{ if ne . "" }}
+<si><t>{{.}}</t></si>
+{{ else }}
+<si><t/></si>
+{{end}}
+{{end}}
 </sst>`
 
 const templateSheetStart = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -189,3 +207,10 @@ const templateCore = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
     <dcterms:created xsi:type="dcterms:W3CDTF">{{timeFormat .CreatedAt}}</dcterms:created>
     <dcterms:modified xsi:type="dcterms:W3CDTF">{{timeFormat .ModifiedAt}}</dcterms:modified>
   </cp:coreProperties>`
+
+const templateHyperLinks = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">   
+  {{ range $k, $v := . }}
+   <Relationship TargetMode="External" Target="{{ $v }}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Id="rId{{ $k }}"/>
+  {{ end }}
+</Relationships>`
